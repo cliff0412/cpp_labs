@@ -1497,7 +1497,11 @@ namespace plf
 			size_t list_size = sizeof(list);
 			size_t group_size = sizeof(group);
 			size_t node_pointer_type_size = sizeof(node_pointer_type);
-			return static_cast<group_size_type>((sizeof(node) * 8 > (sizeof(list) + sizeof(group)) * 2) ? 8 : (((sizeof(list) + sizeof(group)) * 2) / sizeof(node)) + 1);
+			size_t node_allocator_type_size = sizeof(node_allocator_type);
+			size_t list_group_vector_size = sizeof(list::group_vector);
+			size_t list_nodebase_size = sizeof(list::node_base);
+			return 3;
+			// return static_cast<group_size_type>((sizeof(node) * 8 > (sizeof(list) + sizeof(group)) * 2) ? 8 : (((sizeof(list) + sizeof(group)) * 2) / sizeof(node)) + 1);
 		}
 
 		static PLF_CONSTFUNC group_size_type list_max_block_capacity() PLF_NOEXCEPT
