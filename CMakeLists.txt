@@ -1,11 +1,15 @@
 cmake_minimum_required(VERSION 3.29)
 project(bench_string)
-set(CMAKE_CXX_STANDARD 17) 
+set(CMAKE_CXX_STANDARD 17)
 
 find_package(benchmark REQUIRED)
-
+# find_package(PAPI REQUIRED)
+message("CMAKE_SOURCE_DIR=: ${CMAKE_SOURCE_DIR}")
 add_executable(bench_lists benches/bench_lists.cpp)
+# target_link_libraries(bench_lists PAPI::PAPI)
+target_include_directories(bench_lists PRIVATE /usr/include/)
+target_include_directories(bench_lists PRIVATE ${CMAKE_SOURCE_DIR}/unroll_list/)
+target_link_libraries(bench_lists papi)
 target_link_libraries(bench_lists benchmark::benchmark)
-
 
 add_executable(lists lists/lists.cpp)
