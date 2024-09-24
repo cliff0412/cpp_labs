@@ -1,4 +1,5 @@
 .vscode
 out/
 build/
+papi-*/
 plf_list/list.dSYM/Contents/
