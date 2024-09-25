@@ -1,12 +1,13 @@
 #include <benchmark/benchmark.h>
 #include <forward_list>
-#include <random>
 #include <papi.h>
 #include <iostream>
 #include <plf_list.h>
 #include <immintrin.h>
 #include <chrono>
 #include <thread>
+#include "lists.h"
+#include "util.h"
 
 #define PAPI_START()                                                   \
     if (PAPI_library_init(PAPI_VER_CURRENT) != PAPI_VER_CURRENT)       \
@@ -49,16 +50,6 @@
     PAPI_cleanup_eventset(event_set);                                \
     PAPI_destroy_eventset(&event_set);
 
-std::random_device rd;
-std::mt19937 gen(rd());
-std::uniform_real_distribution<> dis(0.0, 1.0);
-
-struct alignas(16) Order
-{
-    double price;
-    double fee;
-};
-
 #ifdef __USE_AVX__
 
 double avx_multiply_sum(const double *a, const double *b, size_t size)
@@ -91,10 +82,9 @@ static void BM_vector_avx_iter_sum(benchmark::State &state)
     double fees[state.range(0)];
     for (int i = 0; i < state.range(0); ++i)
     {
-        double random_price = dis(gen);
-        double random_fee = dis(gen);
-        prices[i] = random_price;
-        fees[i] = random_fee;
+
+        prices[i] = gen_random_double();
+        fees[i] = gen_random_double();
         // Order order{random_price, random_fee};
         // orders[i] = order;
     }
@@ -113,9 +103,8 @@ static void BM_vector_iter_sum(benchmark::State &state)
     std::vector<Order> orders(state.range(0));
     for (int i = 0; i < state.range(0); ++i)
     {
-        double random_price = dis(gen);
-        double random_fee = dis(gen);
-        Order order{random_price, random_fee};
+
+        Order order{gen_random_double(), gen_random_double()};
         orders[i] = order;
     }
     PAPI_START();
@@ -138,9 +127,7 @@ static void BM_forwardlist_iter_sum(benchmark::State &state)
     std::forward_list<Order> orders;
     for (int i = 0; i < state.range(0); ++i)
     {
-        double random_price = dis(gen);
-        double random_fee = dis(gen);
-        Order order{random_price, random_fee};
+        Order order{gen_random_double(), gen_random_double()};
         orders.push_front(order);
     }
 
@@ -157,18 +144,40 @@ static void BM_forwardlist_iter_sum(benchmark::State &state)
     PAPI_END();
 }
 
-static void BM_unroll_list_iter_sum(benchmark::State &state)
-{
+static float rm_factor = 0.1;
+static float insert_factor = 0.1;
 
-    plf::list<Order> orders;
-    for (int i = 0; i < state.range(0); ++i)
-    {
-        double random_price = dis(gen);
-        double random_fee = dis(gen);
-        Order order{random_price, random_fee};
-        orders.push_front(order);
+#define UNROLL_LIST_ORDER_SETUP(size)                                                          \
+    plf::list<Order> orders;                                                                   \
+    for (int i = 0; i < size; ++i)                                                             \
+    {                                                                                          \
+        orders.push_back(Order{static_cast<double>(i), static_cast<double>(i)});               \
+    }                                                                                          \
+    size_t rm_size = size * rm_factor;                                                         \
+    std::vector<int> idx_rm = gen_random_int(0, size, rm_size);                                \
+    for (auto it = idx_rm.begin(); it != idx_rm.end(); it++)                                   \
+    {                                                                                          \
+        orders.remove(Order{static_cast<double>(*it), static_cast<double>(*it)});              \
+    }                                                                                          \
+    size_t insert_size = (size - rm_size);                                                     \
+    std::vector<int> idx_insert = gen_random_int(0, insert_size, insert_size * insert_factor); \
+    std::sort(idx_insert.begin(), idx_insert.end());                                           \
+    auto it = orders.begin();                                                                  \
+    it++;                                                                                      \
+    int i = 0;                                                                                 \
+    for (auto it = orders.begin(); it != orders.end(); ++it)                                   \
+    {                                                                                          \
+        auto find_idx = std::find(idx_insert.begin(), idx_insert.end(), i);                    \
+        if (find_idx != idx_insert.end())                                                      \
+        {                                                                                      \
+            orders.insert(it, Order{static_cast<double>(i), static_cast<double>(i)});          \
+        }                                                                                      \
+        i++;                                                                                   \
     }
 
+static void BM_unroll_list_iter_sum(benchmark::State &state)
+{
+    UNROLL_LIST_ORDER_SETUP(state.range(0));
     PAPI_START();
     for (auto _ : state)
     {
@@ -182,11 +191,58 @@ static void BM_unroll_list_iter_sum(benchmark::State &state)
     PAPI_END();
 }
 
+static void BM_unroll_list_iter_sum_avx(benchmark::State &state)
+{
+#if defined(__x86_64__) || defined(_M_X64)
+    UNROLL_LIST_ORDER_SETUP(state.range(0))
+    PAPI_START();
+    for (auto _ : state)
+    {
+        auto it_avx = orders.begin();
+        double *start_ptr = &it_avx->price;
+        double *last_ptr = start_ptr;
+
+        while (it_avx != orders.end())
+        {
+            int continuous_num = 1;
+            bool continuous = true;
+            while (continuous && it_avx != orders.end())
+            {
+                it_avx++;
+                double *curr_ptr = &it_avx->price;
+
+                size_t offset = curr_ptr - last_ptr;
+
+                if (offset != 4)
+                {
+                    // std::cout << "apply avx: " << continuous_num << std::endl;
+                    // for (double *j = start_ptr; j <= last_ptr; j = j + 4)
+                    // {
+                    //     std::cout << *j << " " << *(j + 1) << std::endl;
+                    // }
+                    double sum = apply_order_avx_sum(start_ptr, continuous_num);
+                    // std::cout << "sum: " << sum << std::endl;
+                    continuous = false;
+                    start_ptr = curr_ptr;
+                }
+                else
+                {
+                    continuous_num++;
+                }
+                last_ptr = curr_ptr;
+            }
+        }
+    }
+    PAPI_END();
+#endif
+}
+
 static size_t SIZE = 10000;
 BENCHMARK(BM_vector_iter_sum)->Arg(SIZE);
 BENCHMARK(BM_forwardlist_iter_sum)->Arg(SIZE);
 BENCHMARK(BM_unroll_list_iter_sum)->Arg(SIZE);
 #ifdef __USE_AVX__
 BENCHMARK(BM_vector_avx_iter_sum)->Arg(SIZE);
+BENCHMARK(BM_unroll_list_iter_sum_avx)->Arg(SIZE);
 #endif
 BENCHMARK_MAIN();
