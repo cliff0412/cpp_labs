@@ -1506,6 +1506,7 @@ namespace plf
 
 		static PLF_CONSTFUNC group_size_type list_max_block_capacity() PLF_NOEXCEPT
 		{
+			// TODO: this is only emperical setting; could be optimized
 			return 2048u;
 		}
 

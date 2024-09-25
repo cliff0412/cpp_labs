@@ -1,52 +1,56 @@
 #include <forward_list>
 #include <random>
 #include <iostream>
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
-#include <omp.h>
+#endif
+// #include <omp.h>
 #include <chrono>
 #include <thread>
+#include <plf_list.h>
 
 std::random_device rd;  // Seed generator
 std::mt19937 gen(rd()); // Mersenne Twister engine
 std::uniform_real_distribution<> dis(0.0, 1.0);
 
-struct Order
+struct alignas(16) Order
 {
     double price;
     double fee;
+
+    bool operator==(const Order &other) const
+    {
+        return (price == other.price) && (fee == other.fee);
+    }
 };
 
-double avx_multiply_sum(const double *a, const double *b, size_t size)
+#if defined(__x86_64__) || defined(_M_X64)
+double apply_order_avx_sum(const double *p, size_t size)
 {
-    // AVX register to store the sum
-    __m256d sum = _mm256_setzero_pd();
 
-    // Process four doubles at a time
-    size_t i;
-    for (i = 0; i + 3 < size; i += 4)
+    size_t i = 0;
+    double final_sum = 0;
+    if (size >= 4)
     {
-        // Load four double values from each array
-        __m256d vec_a = _mm256_loadu_pd(a + i); // Load unaligned data from a[i] to a[i+3]
-        __m256d vec_b = _mm256_loadu_pd(b + i); // Load unaligned data from b[i] to b[i+3]
-
-        // Multiply the two vectors
-        __m256d vec_mul = _mm256_mul_pd(vec_a, vec_b);
-
-        // Add the result to the sum
-        sum = _mm256_add_pd(sum, vec_mul);
+        __m256d sum = _mm256_setzero_pd();
+        while (i + 3 < size)
+        {
+            __m256d vec_p = _mm256_loadu_pd(p + i);
+            __m256d vec_f = _mm256_loadu_pd(p + 1 + i);
+            __m256d vec_mul = _mm256_mul_pd(vec_p, vec_f);
+            sum = _mm256_add_pd(sum, vec_mul);
+            i += 4;
+        }
+        double result[4];
+        _mm256_storeu_pd(result, sum);
+        final_sum = result[0] + result[1] + result[2] + result[3];
     }
 
-    // Horizontal addition of the 256-bit register (four doubles) into a single double
-    double result[4];
-    _mm256_storeu_pd(result, sum);
-    double final_sum = result[0] + result[1] + result[2] + result[3];
-
-    // Handle the remaining elements (if the size is not a multiple of 4)
-    for (; i < size; ++i)
+    while (i < size)
     {
-        final_sum += a[i] * b[i];
+        final_sum += *(p + i) * *(p + 1 + i);
+        ++i
     }
-
     return final_sum;
 }
 
@@ -67,7 +71,7 @@ void avx_add(double *a, double *b, double *result, size_t size)
         _mm256_storeu_pd(&result[i], vec_res);
     }
 }
-
+#endif
 void iterate_vector(size_t size)
 {
 
@@ -109,49 +113,114 @@ void iterate_forward_list(size_t size)
     }
     std::cout << sum << std::endl;
 }
+
+std::vector<int> gen_random_int(int lower, int upper, int nums)
+{
+    std::random_device rd;  // Obtain a random number from hardware
+    std::mt19937 eng(rd()); // Seed the generator
+
+    // Create a uniform distribution in the specified range
+    std::uniform_int_distribution<> distr(lower, upper);
+
+    std::vector<int> results(nums);
+    for (int i = 0; i < nums; ++i)
+    {
+        // Generate a random number
+        bool unique = false;
+        while (!unique)
+        {
+            int random_integer = distr(eng);
+            auto it = std::find(results.begin(), results.end(), random_integer);
+            if (it == results.end())
+            {
+                unique = true;
+                results[i] = random_integer;
+            }
+        }
+    }
+    return results;
+}
+
 int main()
 {
+    size_t size = 20;
+    float rm_factor = 0.1;
+    float insert_factor = 0.1;
 
-    // iterate_forward_list(1000);
-    // iterate_vector(1000);
-    // std::cout << sizeof(double) << std::endl;
+    plf::list<Order> orders;
+    for (int i = 0; i < size; ++i)
+    {
+        orders.push_back(Order{static_cast<double>(i), static_cast<double>(i)});
+    }
 
-    // size_t size = 100;
-    // double a[size];
-    // double b[size];
-    // for(int i =0; i < size; ++i) {
-    //     a[i] = static_cast<double>(1);
-    //     b[i] = static_cast<double>(1);
-    // }
-    // double sum = avx_multiply_sum(a,b,size);
-    // std::cout << "sum: " << sum << std::endl;
+    size_t rm_size = size * rm_factor;
+    std::vector<int> idx_rm = gen_random_int(0, size, rm_size);
+    for (auto it = idx_rm.begin(); it != idx_rm.end(); it++)
+    {
+        std::cout << "remove: " << *it << std::endl;
+        orders.remove(Order{static_cast<double>(*it), static_cast<double>(*it)});
+    }
 
-    //     const size_t size = 1024; // Ensure this is a multiple of 4 for AVX
-    //     double a[size], b[size], result[size];
+    size_t insert_size = (size - rm_size);
+    std::vector<int> idx_insert = gen_random_int(0, insert_size, insert_size * insert_factor);
+    std::sort(idx_insert.begin(), idx_insert.end());
 
-    //     // Initialize the arrays with some values
-    //     for (size_t i = 0; i < size; ++i) {
-    //         a[i] = 1;
-    //         b[i] = 1;
-    //     }
+    auto it = orders.begin();
+    it++;
 
-    //      auto start = std::chrono::high_resolution_clock::now();
-    //     avx_add(a, b, result, 100);
-    //     auto end = std::chrono::high_resolution_clock::now();
-    //    auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
-    //     std::cout << "Time elapsed: " << duration.count() << " ns" << std::endl;
+    int i = 0;
+    for (auto it = orders.begin(); it != orders.end(); ++it)
+    {
+        auto find_idx = std::find(idx_insert.begin(), idx_insert.end(), i);
+        if (find_idx != idx_insert.end())
+        {
+            std::cout << "insert: " << i << std::endl;
+            orders.insert(it, Order{static_cast<double>(i), static_cast<double>(i)});
+        }
 
-    //     auto start2 = std::chrono::high_resolution_clock::now();
-    //     avx_add(a, b, result, 1000);
-    //     auto end2 = std::chrono::high_resolution_clock::now();
-    //     auto duration2 = std::chrono::duration_cast<std::chrono::nanoseconds>(end2 - start2);
+        i++;
+    }
 
-    //     std::cout << "Time elapsed: " << duration2.count() << " ns" << std::endl;
+    for (auto it = orders.begin(); it != orders.end(); it++)
+    {
+        std::cout << "element address: " << &it->price << "element: " << it->price << std::endl;
+    }
 
-    // // Output the first few results to verify correctness
-    // for (size_t i = 0; i < 1024; ++i) {
-    //     std::cout << "result[" << i << "] = " << result[i] << std::endl;
-    // }
+#if defined(__x86_64__) || defined(_M_X64)
+    auto it_avx = orders.begin();
+    double *start_ptr = &it_avx->price;
+    double *last_ptr = start_ptr;
+
+    while (it_avx != orders.end())
+    {
+        int continuous_num = 1;
+        bool continuous = true;
+        while (continuous && it_avx != orders.end())
+        {
+            it_avx++;
+            double *curr_ptr = &it_avx->price;
+
+            size_t offset = curr_ptr - last_ptr;
+
+            if (offset != 4)
+            {
+                std::cout << "apply avx: " << continuous_num << std::endl;
+                for (double *j = start_ptr; j <= last_ptr; j = j + 4)
+                {
+                    std::cout << *j << std::endl;
+                    
+                }
+                double sum = apply_order_avx_sum(start_ptr,continuous_num);
+
+                continuous = false;
+                start_ptr = curr_ptr;
+            } else {
+                continuous_num++;
+            }
+            last_ptr = curr_ptr;
+        }
+    }
+#endif
 
     return 0;
 }

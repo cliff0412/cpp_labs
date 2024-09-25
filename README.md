@@ -11,7 +11,7 @@ PAPI: >= 7.2 (https://github.com/icl-utk-edu/papi)
 options
 -DUSE_AVX=ON
 ```
-cmake -DCMAKE_BUILD_TYPE=Release -DUSE_AVX=ON .. && make -j4
+cmake -DCMAKE_BUILD_TYPE=Release -DUSE_AVX=ON -DBUILD_BENCH=OFF .. && make -j4
 taskset -c 31 ./bench_lists
 ```
 
